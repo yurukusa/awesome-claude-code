@@ -39,6 +39,8 @@ jobs:
     if: github.event.action != 'edited'
     outputs:
       allowed: ${{ steps.enforce.outputs.allowed }}
+      repo_url: ${{ steps.enforce.outputs.repo_url }}
+      cooldown_level: ${{ steps.enforce.outputs.cooldown_level }}
 
     permissions:
       # These are for GITHUB_TOKEN only; our step uses ACC_OPS PAT explicitly.
@@ -46,6 +48,63 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: identify-repo
+        id: identify-repo
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isPR = context.eventName === 'pull_request_target';
+            const author = isPR
+              ? context.payload.pull_request.user.login
+              : context.payload.issue.user.login;
+            const body = isPR
+              ? (context.payload.pull_request.body || '')
+              : (context.payload.issue.body || '');
+
+            function extractUrls(text) {
+              const pattern = /https?:\/\/github\.com\/([^\/\s]+)\/([^\/\s#?")\]]+)/gi;
+              const results = [];
+
+              for (const match of text.matchAll(pattern)) {
+                const owner = match[1];
+                const repo = match[2]
+                  .replace(/\.git$/i, '')
+                  .replace(/[.,;:!?]+$/, '');
+                if (!owner || !repo) continue;
+                results.push({
+                  owner,
+                  repo,
+                  url: `https://github.com/${owner}/${repo}`,
+                });
+              }
+
+              return results;
+            }
+
+            function firstAuthorMatch(urls, authorLogin) {
+              const authorLower = (authorLogin || '').toLowerCase();
+              const match = urls.find(u => u.owner.toLowerCase() === authorLower);
+              return match ? match.url : '';
+            }
+
+            let repoUrl = '';
+            const urls = extractUrls(body);
+
+            if (!isPR) {
+              const linkLine = body.match(/^\s*\*\*Link:\*\*\s*(.+)\s*$/im);
+              if (linkLine) {
+                const templateUrls = extractUrls(linkLine[1]);
+                repoUrl = firstAuthorMatch(templateUrls, author);
+              }
+            }
+
+            if (!repoUrl) {
+              repoUrl = firstAuthorMatch(urls, author);
+            }
+
+            core.setOutput('repo_url', repoUrl);
+            console.log(repoUrl ? `Repo URL identified: ${repoUrl}` : 'No matching repo URL identified.');
+
       - name: Get PR changed files
         id: files
         if: github.event_name == 'pull_request_target'
@@ -122,6 +181,7 @@ jobs:
           OPS_REPO: ${{ env.OPS_REPO }}
           OPS_PATH: ${{ env.OPS_PATH }}
           ISSUE_BODY: ${{ github.event.issue.body || '' }}
+          REPO_URL: ${{ steps.identify-repo.outputs.repo_url || '' }}
           PR_CLASSIFICATION: ${{ steps.classify.outputs.classification || '' }}
           PR_CONFIDENCE: ${{ steps.classify.outputs.confidence || '' }}
         with:
@@ -135,6 +195,7 @@ jobs:
             const isPR = context.eventName === 'pull_request_target';
             const repo = context.repo;
             const now = new Date();
+            const repoUrl = process.env.REPO_URL || '';
 
             const author = isPR
               ? context.payload.pull_request.user.login
@@ -142,6 +203,8 @@ jobs:
             const number = isPR
               ? context.payload.pull_request.number
               : context.payload.issue.number;
+            core.setOutput('repo_url', '');
+            core.setOutput('cooldown_level', '');
 
             // ---- PR: skip bots ----
             if (isPR && context.payload.pull_request.user.type === 'Bot') {
@@ -269,8 +332,14 @@ jobs:
               return `${days} days`;
             }
 
-            async function saveAndExit(allowed) {
+            async function saveAndExit(
+              allowed,
+              selectedRepoUrl = '',
+              selectedCooldownLevel = ''
+            ) {
               core.setOutput('allowed', allowed);
+              core.setOutput('repo_url', selectedRepoUrl || '');
+              core.setOutput('cooldown_level', selectedCooldownLevel || '');
 
               if (!stateChanged) return;
 
@@ -359,7 +428,7 @@ jobs:
               console.log(
                 `VIOLATION (PR): ${author} — closed #${number}, level → ${updated.cooldown_level}`
               );
-              await saveAndExit('false');
+              await saveAndExit('false', repoUrl, String(updated.cooldown_level));
               return;
             }
 
@@ -378,7 +447,7 @@ jobs:
                 `or contact the maintainer.`
               );
               console.log(`BANNED: ${author} — rejected #${number}`);
-              await saveAndExit('false');
+              await saveAndExit('false', repoUrl, String(userState.cooldown_level || ''));
               return;
             }
 
@@ -407,7 +476,7 @@ jobs:
                 console.log(
                   `COOLDOWN: ${author} — rejected #${number}, level ${prevLevel} → ${updated.cooldown_level}`
                 );
-                await saveAndExit('false');
+                await saveAndExit('false', repoUrl, String(updated.cooldown_level));
                 return;
               }
 
@@ -432,7 +501,7 @@ jobs:
               console.log(
                 `VIOLATION (no label): ${author} — rejected #${number}, level → ${updated.cooldown_level}`
               );
-              await saveAndExit('false');
+              await saveAndExit('false', repoUrl, String(updated.cooldown_level));
               return;
             }
 
@@ -475,7 +544,7 @@ jobs:
                     `VIOLATION (repo age): ${author} — rejected #${number}, ` +
                     `${repoOwner}/${repoName} is ${ageDays.toFixed(1)}d old, level → ${updated.cooldown_level}`
                   );
-                  await saveAndExit('false');
+                  await saveAndExit('false', repoUrl, String(updated.cooldown_level));
                   return;
                 }
               } catch (e) {
@@ -487,6 +556,34 @@ jobs:
 
             console.log(`CLEAN: ${author} — issue #${number} allowed through.`);
             await saveAndExit('true');
+
+  dispatch-intake:
+    needs: enforce-cooldown
+    if: |
+      needs.enforce-cooldown.result == 'success' &&
+      needs.enforce-cooldown.outputs.repo_url != '' &&
+      needs.enforce-cooldown.outputs.cooldown_level == '1'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch intake
+        env:
+          DISPATCH_URL: ${{ secrets.SC_DISPATCH_URL }}
+          DISPATCH_TOKEN: ${{ secrets.SC_DISPATCH_TOKEN }}
+          REPO_URL: ${{ needs.enforce-cooldown.outputs.repo_url }}
+          SOURCE_URL: ${{ format('https://github.com/{0}/actions/runs/{1}', github.repository, github.run_id) }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc \
+            --arg event_type "event_registered" \
+            --arg repo_url "${REPO_URL}" \
+            --arg source_url "${SOURCE_URL}" \
+            '{event_type:$event_type, client_payload:{repo_url:$repo_url, source_url:$source_url}}')"
+
+          curl -fsS -X POST "${DISPATCH_URL}" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "${payload}" >/dev/null
 
   validate:
     needs: enforce-cooldown
