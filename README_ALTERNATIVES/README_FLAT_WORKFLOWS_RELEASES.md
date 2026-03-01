@@ -115,4 +115,4 @@ A flat list view of all resources. Category: **Workflows** | Sorted: by latest r
 
 **Total Resources:** 5
 
-**Last Generated:** 2026-02-27
+**Last Generated:** 2026-03-01
