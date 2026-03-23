@@ -240,6 +240,7 @@
 - [Dippy](https://github.com/ldayton/Dippy) by [Lily Dayton](https://github.com/ldayton) - Auto-approve safe bash commands using AST-based parsing, while prompting for destructive operations. Solves permission fatigue without disabling safety. Supports Claude Code, Gemini CLI, and Cursor.
 - [parry](https://github.com/vaporif/parry) by [Dmytro Onypko](https://github.com/vaporif) - Prompt injection scanner for Claude Code hooks. Scans tool inputs and outputs for injection attacks, secrets, and data exfiltration attempts. [NOTE: Early development phase but worth a look.].
 - [TDD Guard](https://github.com/nizos/tdd-guard) by [Nizar Selander](https://github.com/nizos) - A hooks-driven system that monitors file operations in real-time and blocks changes that violate TDD principles.
+- [cc-safe-setup](https://github.com/yurukusa/cc-safe-setup) by [yurukusa](https://github.com/yurukusa) - One command to make Claude Code safe for autonomous operation. 8 built-in hooks + 25 installable examples covering destructive commands, database wipes, secret leaks, and more. Includes --audit (safety scoring), --scan (tech stack detection), and --learn (self-improving safety from block history). 5,000+ weekly npm downloads.
 - [TypeScript Quality Hooks](https://github.com/bartolli/claude-code-typescript-hooks) by [bartolli](https://github.com/bartolli) - Quality check hook for Node.js TypeScript projects with TypeScript compilation. ESLint auto-fixing, and Prettier formatting. Uses SHA256 config caching for < 5ms validation performance during real-time editing.
 
 <br>
